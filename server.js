@@ -17,7 +17,7 @@ const allowedOrigins = [
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin) return callback(null, true);
-    const allowed = allowedOrigins.some(o => origin.startsWith(o));
+    const allowed = allowedOrigins.some(o => origin.toLowerCase().startsWith(o.toLowerCase()));
     if (allowed) return callback(null, true);
     callback(new Error(`CORS bloqué pour: ${origin}`));
   }
