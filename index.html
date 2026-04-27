@@ -1069,11 +1069,7 @@ Contexte: formation agriculteurs ruraux de Thiès, faible littératie, Wolof, ap
 }
 
 // ── CONFIG — remplace cette URL par ton backend déployé ──────────────────
-const PROXY_URL = 'https://YOUR-BACKEND.onrender.com/api/claude';
-// Exemples:
-//   Render:  'https://myagro-claude-proxy.onrender.com/api/claude'
-//   Railway: 'https://myagro-claude-proxy.up.railway.app/api/claude'
-//   VPS:     'https://api.tondomaine.com/api/claude'
+const PROXY_URL = 'https://myagro-claude-proxy.onrender.com/api/claude';
 
 async function callClaude(prompt) {
   const resp     = document.getElementById('claudeResp');
