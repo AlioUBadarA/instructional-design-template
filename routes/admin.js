@@ -1,0 +1,272 @@
+const express = require('express');
+const bcrypt  = require('bcryptjs');
+const { pool } = require('../db/pool');
+const auth    = require('../middleware/auth');
+const isAdmin = require('../middleware/isAdmin');
+
+const router = express.Router();
+router.use(auth, isAdmin);
+
+// ── Helper audit ──────────────────────────────────────────────
+async function log(actorId, actorNom, action, target, detail, ip) {
+  try {
+    await pool.query(
+      `INSERT INTO audit_logs (actor_id, actor_nom, action, target_id, target_nom, detail, ip)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [actorId, actorNom, action, target?.id || null, target?.nom || null,
+       detail ? JSON.stringify(detail) : null, ip || null]
+    );
+  } catch (e) {
+    console.error('audit log error:', e.message);
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+// STATS GLOBALES
+// ══════════════════════════════════════════════════════════════
+
+// GET /api/admin/stats
+router.get('/stats', async (req, res) => {
+  try {
+    const [usersR, ventesR, clientsR, caMoisR, caGlobalR, suspendedR] = await Promise.all([
+      pool.query(`SELECT COUNT(*) FROM users WHERE role = 'rizier'`),
+      pool.query(`SELECT COUNT(*) FROM ventes`),
+      pool.query(`SELECT COUNT(*) FROM clients`),
+      pool.query(`SELECT COALESCE(SUM(montant),0) as total FROM ventes
+                  WHERE date_vente >= date_trunc('month', NOW())`),
+      pool.query(`SELECT COALESCE(SUM(montant),0) as total FROM ventes`),
+      pool.query(`SELECT COUNT(*) FROM users WHERE suspended = TRUE`),
+    ]);
+    res.json({
+      total_riziers:   Number(usersR.rows[0].count),
+      total_ventes:    Number(ventesR.rows[0].count),
+      total_clients:   Number(clientsR.rows[0].count),
+      ca_mois:         Number(caMoisR.rows[0].total),
+      ca_global:       Number(caGlobalR.rows[0].total),
+      comptes_suspendus: Number(suspendedR.rows[0].count),
+    });
+  } catch (err) {
+    console.error('admin stats:', err.message);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+// GESTION DES UTILISATEURS
+// ══════════════════════════════════════════════════════════════
+
+// GET /api/admin/users — liste tous les utilisateurs avec leurs stats
+router.get('/users', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        u.id, u.nom, u.email, u.rizerie, u.telephone, u.ville,
+        u.role, u.suspended, u.suspended_reason, u.suspended_at,
+        u.created_at,
+        COUNT(DISTINCT v.id)         AS nb_ventes,
+        COUNT(DISTINCT c.id)         AS nb_clients,
+        COALESCE(SUM(v.montant), 0)  AS ca_total,
+        MAX(v.date_vente)            AS derniere_vente
+      FROM users u
+      LEFT JOIN ventes  v ON v.user_id = u.id
+      LEFT JOIN clients c ON c.user_id = u.id
+      GROUP BY u.id
+      ORDER BY u.created_at DESC
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    console.error('admin users list:', err.message);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// GET /api/admin/users/:id — profil complet + ventes + clients
+router.get('/users/:id', async (req, res) => {
+  try {
+    const [userR, ventesR, clientsR, pilotageR] = await Promise.all([
+      pool.query(
+        `SELECT id, nom, email, rizerie, telephone, ville, role,
+                suspended, suspended_reason, suspended_at, created_at
+         FROM users WHERE id = $1`, [req.params.id]
+      ),
+      pool.query(
+        `SELECT * FROM ventes WHERE user_id = $1 ORDER BY date_vente DESC LIMIT 50`,
+        [req.params.id]
+      ),
+      pool.query(
+        `SELECT * FROM clients WHERE user_id = $1 ORDER BY nom`,
+        [req.params.id]
+      ),
+      pool.query(
+        `SELECT p.semaine,
+                SUM(p.objectif) AS objectif_total,
+                SUM(p.realise)  AS realise_total
+         FROM pilotage p WHERE p.user_id = $1
+         GROUP BY p.semaine ORDER BY p.semaine DESC LIMIT 8`,
+        [req.params.id]
+      ),
+    ]);
+    if (!userR.rows.length) return res.status(404).json({ error: 'Utilisateur non trouvé' });
+
+    res.json({
+      user:     userR.rows[0],
+      ventes:   ventesR.rows,
+      clients:  clientsR.rows,
+      pilotage: pilotageR.rows,
+    });
+  } catch (err) {
+    console.error('admin user detail:', err.message);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// POST /api/admin/users — créer un compte (support)
+router.post('/users', async (req, res) => {
+  try {
+    const { nom, email, password, rizerie, telephone, ville } = req.body;
+    if (!nom || !email || !password)
+      return res.status(400).json({ error: 'Nom, email et mot de passe requis' });
+    if (password.length < 6)
+      return res.status(400).json({ error: 'Mot de passe : 6 caractères minimum' });
+
+    const exists = await pool.query(
+      'SELECT id FROM users WHERE email = $1', [email.toLowerCase()]
+    );
+    if (exists.rows.length)
+      return res.status(409).json({ error: 'Cet email est déjà utilisé' });
+
+    const hash = await bcrypt.hash(password, 12);
+    const result = await pool.query(
+      `INSERT INTO users (nom, email, password, rizerie, telephone, ville)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       RETURNING id, nom, email, rizerie, telephone, ville, role, created_at`,
+      [nom.trim(), email.toLowerCase().trim(), hash,
+       rizerie || null, telephone || null, ville || null]
+    );
+    await log(req.userId, req.userNom, 'ACCOUNT_CREATED_BY_ADMIN',
+              result.rows[0], { email }, req.ip);
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error('admin create user:', err.message);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// PUT /api/admin/users/:id — modifier le profil
+router.put('/users/:id', async (req, res) => {
+  try {
+    const { nom, rizerie, telephone, ville, email } = req.body;
+    const result = await pool.query(
+      `UPDATE users SET nom=$1, email=$2, rizerie=$3, telephone=$4, ville=$5
+       WHERE id=$6
+       RETURNING id, nom, email, rizerie, telephone, ville, role, suspended`,
+      [nom, email || null, rizerie || null, telephone || null, ville || null, req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Utilisateur non trouvé' });
+    await log(req.userId, req.userNom, 'PROFILE_UPDATED',
+              result.rows[0], { nom, email }, req.ip);
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('admin update user:', err.message);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// PATCH /api/admin/users/:id/suspend — suspendre ou réactiver
+router.patch('/users/:id/suspend', async (req, res) => {
+  try {
+    const { suspended, reason } = req.body;
+    if (req.params.id === req.userId)
+      return res.status(400).json({ error: 'Impossible de suspendre son propre compte' });
+
+    const result = await pool.query(
+      `UPDATE users
+       SET suspended=$1, suspended_reason=$2, suspended_at=$3
+       WHERE id=$4
+       RETURNING id, nom, email, suspended, suspended_reason`,
+      [!!suspended, reason || null, suspended ? new Date() : null, req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Utilisateur non trouvé' });
+    await log(req.userId, req.userNom,
+              suspended ? 'ACCOUNT_SUSPENDED' : 'ACCOUNT_ACTIVATED',
+              result.rows[0], { reason }, req.ip);
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('admin suspend:', err.message);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// PATCH /api/admin/users/:id/password — réinitialiser le mot de passe
+router.patch('/users/:id/password', async (req, res) => {
+  try {
+    const { new_password } = req.body;
+    if (!new_password || new_password.length < 6)
+      return res.status(400).json({ error: 'Mot de passe : 6 caractères minimum' });
+
+    const hash = await bcrypt.hash(new_password, 12);
+    const result = await pool.query(
+      `UPDATE users SET password=$1 WHERE id=$2 RETURNING id, nom, email`,
+      [hash, req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Utilisateur non trouvé' });
+    await log(req.userId, req.userNom, 'PASSWORD_RESET',
+              result.rows[0], {}, req.ip);
+    res.json({ message: 'Mot de passe réinitialisé avec succès' });
+  } catch (err) {
+    console.error('admin reset password:', err.message);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// DELETE /api/admin/users/:id — supprimer un compte
+router.delete('/users/:id', async (req, res) => {
+  try {
+    if (req.params.id === req.userId)
+      return res.status(400).json({ error: 'Impossible de supprimer son propre compte' });
+
+    const userR = await pool.query(
+      'SELECT id, nom, email FROM users WHERE id = $1', [req.params.id]
+    );
+    if (!userR.rows.length) return res.status(404).json({ error: 'Utilisateur non trouvé' });
+
+    await log(req.userId, req.userNom, 'ACCOUNT_DELETED',
+              userR.rows[0], { email: userR.rows[0].email }, req.ip);
+    await pool.query('DELETE FROM users WHERE id = $1', [req.params.id]);
+    res.json({ message: 'Compte supprimé définitivement' });
+  } catch (err) {
+    console.error('admin delete user:', err.message);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+// AUDIT LOG
+// ══════════════════════════════════════════════════════════════
+
+// GET /api/admin/audit
+router.get('/audit', async (req, res) => {
+  try {
+    const limit  = Math.min(Number(req.query.limit)  || 100, 500);
+    const offset = Number(req.query.offset) || 0;
+    const action = req.query.action || null;
+
+    let q = 'SELECT * FROM audit_logs';
+    const params = [];
+    if (action) { q += ' WHERE action = $1'; params.push(action); }
+    q += ` ORDER BY created_at DESC LIMIT $${params.length+1} OFFSET $${params.length+2}`;
+    params.push(limit, offset);
+
+    const [logsR, countR] = await Promise.all([
+      pool.query(q, params),
+      pool.query('SELECT COUNT(*) FROM audit_logs' + (action ? ' WHERE action=$1' : ''),
+                 action ? [action] : []),
+    ]);
+    res.json({ logs: logsR.rows, total: Number(countR.rows[0].count) });
+  } catch (err) {
+    console.error('admin audit:', err.message);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+module.exports = router;

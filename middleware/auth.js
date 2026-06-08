@@ -8,8 +8,9 @@ function authMiddleware(req, res, next) {
   const token = header.slice(7);
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
-    req.userId = payload.userId;
-    req.userNom = payload.nom;
+    req.userId   = payload.userId;
+    req.userNom  = payload.nom;
+    req.userRole = payload.role || 'rizier';
     next();
   } catch (err) {
     return res.status(401).json({ error: 'Token invalide ou expire' });

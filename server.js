@@ -45,6 +45,7 @@ app.use('/api/clients',   require('./routes/clients'));
 app.use('/api/ventes',    require('./routes/ventes'));
 app.use('/api/pilotage',  require('./routes/pilotage'));
 app.use('/api/dashboard', require('./routes/dashboard'));
+app.use('/api/admin',     require('./routes/admin'));
 
 // ── 404 ───────────────────────────────────────────────────────
 app.use((req, res) => {

@@ -24,18 +24,18 @@ router.post('/register', async (req, res) => {
     const result = await pool.query(
       `INSERT INTO users (nom, email, password, rizerie, telephone, ville)
        VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id, nom, email, rizerie, telephone, ville, created_at`,
+       RETURNING id, nom, email, rizerie, telephone, ville, role, created_at`,
       [nom.trim(), email.toLowerCase().trim(), hash, rizerie || null, telephone || null, ville || null]
     );
 
     const user = result.rows[0];
     const token = jwt.sign(
-      { userId: user.id, nom: user.nom },
+      { userId: user.id, nom: user.nom, role: user.role },
       process.env.JWT_SECRET,
       { expiresIn: '30d' }
     );
 
-    res.status(201).json({ token, user: { id: user.id, nom: user.nom, email: user.email, rizerie: user.rizerie, telephone: user.telephone, ville: user.ville } });
+    res.status(201).json({ token, user: { id: user.id, nom: user.nom, email: user.email, rizerie: user.rizerie, telephone: user.telephone, ville: user.ville, role: user.role } });
   } catch (err) {
     console.error('register:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
@@ -50,7 +50,7 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ error: 'Email et mot de passe requis' });
 
     const result = await pool.query(
-      'SELECT id, nom, email, password, rizerie, telephone, ville FROM users WHERE email = $1',
+      'SELECT id, nom, email, password, rizerie, telephone, ville, role, suspended, suspended_reason FROM users WHERE email = $1',
       [email.toLowerCase().trim()]
     );
     if (!result.rows.length)
@@ -61,13 +61,16 @@ router.post('/login', async (req, res) => {
     if (!valid)
       return res.status(401).json({ error: 'Email ou mot de passe incorrect' });
 
+    if (user.suspended)
+      return res.status(403).json({ error: `Compte suspendu${user.suspended_reason ? ' : ' + user.suspended_reason : ''}` });
+
     const token = jwt.sign(
-      { userId: user.id, nom: user.nom },
+      { userId: user.id, nom: user.nom, role: user.role },
       process.env.JWT_SECRET,
       { expiresIn: '30d' }
     );
 
-    res.json({ token, user: { id: user.id, nom: user.nom, email: user.email, rizerie: user.rizerie, telephone: user.telephone, ville: user.ville } });
+    res.json({ token, user: { id: user.id, nom: user.nom, email: user.email, rizerie: user.rizerie, telephone: user.telephone, ville: user.ville, role: user.role } });
   } catch (err) {
     console.error('login:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
