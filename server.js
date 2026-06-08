@@ -3,7 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
-const { initSchema } = require('./db/pool');
+const { initSchema, runMigrations } = require('./db/pool');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -70,6 +70,7 @@ async function start() {
   }
   try {
     await initSchema();
+    await runMigrations();
     app.listen(PORT, () => {
       console.log(`PFS Backend demarre sur le port ${PORT}`);
       console.log(`Health check : http://localhost:${PORT}/health`);
