@@ -58,6 +58,23 @@ async function runMigrations() {
     }
   }
   console.log('Migrations superadmin appliquees');
+
+  // Passage en superadmin via variable d'environnement
+  if (process.env.SUPERADMIN_EMAIL) {
+    try {
+      const r = await pool.query(
+        `UPDATE users SET role = 'superadmin' WHERE email = $1`,
+        [process.env.SUPERADMIN_EMAIL.toLowerCase().trim()]
+      );
+      if (r.rowCount > 0) {
+        console.log(`Superadmin defini : ${process.env.SUPERADMIN_EMAIL}`);
+      } else {
+        console.warn(`SUPERADMIN_EMAIL defini mais aucun utilisateur trouve avec cet email : ${process.env.SUPERADMIN_EMAIL}`);
+      }
+    } catch (err) {
+      console.error('Erreur passage superadmin:', err.message);
+    }
+  }
 }
 
 module.exports = { pool, initSchema, runMigrations };
