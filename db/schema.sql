@@ -1,0 +1,111 @@
+-- ============================================================
+-- PFS Commercial Platform - Schema PostgreSQL
+-- ============================================================
+
+-- Extension UUID
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+-- ── UTILISATEURS (un compte par rizier) ──────────────────────
+CREATE TABLE IF NOT EXISTS users (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  nom         VARCHAR(120) NOT NULL,
+  email       VARCHAR(200) UNIQUE NOT NULL,
+  password    VARCHAR(200) NOT NULL,
+  rizerie     VARCHAR(150),
+  telephone   VARCHAR(30),
+  ville       VARCHAR(80),
+  created_at  TIMESTAMPTZ DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ── CLIENTS ──────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS clients (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  nom         VARCHAR(150) NOT NULL,
+  type        VARCHAR(50) NOT NULL CHECK (type IN (
+                'Grossiste','Detaillant marche','Boutique',
+                'Restauration','Cantine/Institution')),
+  statut      VARCHAR(20) NOT NULL DEFAULT 'Prospect' CHECK (statut IN (
+                'Actif','Prospect','Dormant')),
+  zone        VARCHAR(100),
+  telephone   VARCHAR(30),
+  volume_estime NUMERIC(10,2) DEFAULT 0,
+  frequence   VARCHAR(50),
+  valorise    VARCHAR(200),
+  horaire     VARCHAR(80),
+  note        TEXT,
+  created_at  TIMESTAMPTZ DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ── VENTES ───────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS ventes (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  client_id   UUID REFERENCES clients(id) ON DELETE SET NULL,
+  client_nom  VARCHAR(150) NOT NULL,
+  date_vente  DATE NOT NULL,
+  produit     VARCHAR(100) NOT NULL,
+  quantite    NUMERIC(10,2) NOT NULL CHECK (quantite > 0),
+  prix_unitaire NUMERIC(10,2) NOT NULL CHECK (prix_unitaire > 0),
+  montant     NUMERIC(12,2) GENERATED ALWAYS AS (quantite * prix_unitaire) STORED,
+  statut_paiement VARCHAR(20) NOT NULL DEFAULT 'En cours' CHECK (statut_paiement IN (
+                    'Paye','En cours','En retard')),
+  date_echeance DATE,
+  note        TEXT,
+  created_at  TIMESTAMPTZ DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ── PILOTAGE HEBDOMADAIRE ─────────────────────────────────────
+CREATE TABLE IF NOT EXISTS pilotage (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  semaine     VARCHAR(30) NOT NULL,
+  jour        VARCHAR(15) NOT NULL CHECK (jour IN (
+                'Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi')),
+  zone        VARCHAR(100),
+  clients_visiter TEXT,
+  objectif    NUMERIC(12,2) DEFAULT 0,
+  realise     NUMERIC(12,2) DEFAULT 0,
+  note        TEXT,
+  updated_at  TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(user_id, semaine, jour)
+);
+
+-- ── ACTIONS CORRECTIVES ───────────────────────────────────────
+CREATE TABLE IF NOT EXISTS actions_correctives (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  semaine     VARCHAR(30) NOT NULL,
+  contenu     TEXT,
+  updated_at  TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(user_id, semaine)
+);
+
+-- ── INDEX ─────────────────────────────────────────────────────
+CREATE INDEX IF NOT EXISTS idx_ventes_user    ON ventes(user_id);
+CREATE INDEX IF NOT EXISTS idx_ventes_date    ON ventes(date_vente);
+CREATE INDEX IF NOT EXISTS idx_ventes_statut  ON ventes(statut_paiement);
+CREATE INDEX IF NOT EXISTS idx_clients_user   ON clients(user_id);
+CREATE INDEX IF NOT EXISTS idx_clients_statut ON clients(statut);
+CREATE INDEX IF NOT EXISTS idx_pilotage_user  ON pilotage(user_id, semaine);
+
+-- ── TRIGGER updated_at ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION set_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN NEW.updated_at = NOW(); RETURN NEW; END;
+$$ LANGUAGE plpgsql;
+
+DO $$ DECLARE t TEXT;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['users','clients','ventes','pilotage','actions_correctives']
+  LOOP
+    EXECUTE format(
+      'DROP TRIGGER IF EXISTS trg_%1$s_upd ON %1$s;
+       CREATE TRIGGER trg_%1$s_upd
+       BEFORE UPDATE ON %1$s
+       FOR EACH ROW EXECUTE FUNCTION set_updated_at();', t);
+  END LOOP;
+END $$;

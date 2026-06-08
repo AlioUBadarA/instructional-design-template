@@ -1,96 +1,82 @@
-const express = require('express');
-const cors    = require('cors');
 require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const { initSchema } = require('./db/pool');
 
-const app  = express();
+const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(express.json());
-
-const allowedOrigins = [
-  process.env.FRONTEND_URL || 'https://YOUR_USERNAME.github.io',
-  'http://localhost:5500',
-  'http://127.0.0.1:5500',
-  'http://localhost:3001',
-];
-
+// ── Securite ──────────────────────────────────────────────────
+app.use(helmet());
 app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin) return callback(null, true);
-    const allowed = allowedOrigins.some(o => origin.toLowerCase().startsWith(o.toLowerCase()));
-    if (allowed) return callback(null, true);
-    callback(new Error(`CORS bloqué pour: ${origin}`));
-  }
+  origin: process.env.FRONTEND_URL || '*',
+  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization'],
 }));
 
-app.get('/', (req, res) => {
-  res.json({
-    status: 'ok',
-    service: 'myAgro Claude Proxy',
-    version: '1.0.0',
-    frontend: process.env.FRONTEND_URL || 'non configuré'
-  });
+// Rate limiting global
+app.use(rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 min
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Trop de requetes. Reessayez dans 15 minutes.' }
+}));
+
+// Rate limiting strict pour auth
+app.use('/api/auth', rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: { error: 'Trop de tentatives de connexion. Reessayez dans 15 minutes.' }
+}));
+
+app.use(express.json({ limit: '1mb' }));
+
+// ── Health check ──────────────────────────────────────────────
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '1.0.0' });
 });
 
-app.post('/api/claude', async (req, res) => {
-  const { prompt, system, max_tokens = 1000 } = req.body;
+// ── Routes ────────────────────────────────────────────────────
+app.use('/api/auth',      require('./routes/auth'));
+app.use('/api/clients',   require('./routes/clients'));
+app.use('/api/ventes',    require('./routes/ventes'));
+app.use('/api/pilotage',  require('./routes/pilotage'));
+app.use('/api/dashboard', require('./routes/dashboard'));
 
-  if (!prompt || typeof prompt !== 'string' || prompt.trim().length === 0) {
-    return res.status(400).json({ error: 'Le champ prompt est requis.' });
-  }
-  if (prompt.length > 8000) {
-    return res.status(400).json({ error: 'Prompt trop long (max 8000 caractères).' });
-  }
-  if (!process.env.ANTHROPIC_API_KEY) {
-    console.error('ANTHROPIC_API_KEY manquante dans .env');
-    return res.status(500).json({ error: 'Clé API non configurée côté serveur.' });
-  }
-
-  try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type':      'application/json',
-        'x-api-key':         process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model:      'claude-sonnet-4-20250514',
-        max_tokens: Math.min(max_tokens, 2000),
-        system: system || `Tu es Claude, assistant expert intégré dans le système de design pédagogique de myAgro.
-Tu maîtrises: le framework ADDIE cyclique, l'Agile-Scrum adapté au terrain, la pédagogie pour apprenants
-à faible littératie en Afrique de l'Ouest, les pratiques agricoles sahéliennes (arachide, mil, maïs, sorgho),
-et les valeurs myAgro (agriculteurs comme clients, innovation fondée sur les données, impact mesurable).
-Réponds de manière concise, structurée, ancrée dans la réalité du terrain sénégalais.
-Utilise des émojis pertinents pour structurer. Maximum 300 mots.`,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-    });
-
-    if (!response.ok) {
-      const errData = await response.json().catch(() => ({}));
-      console.error('Anthropic API error:', errData);
-      return res.status(response.status).json({
-        error: errData.error?.message || `Erreur Anthropic API (${response.status})`
-      });
-    }
-
-    const data = await response.json();
-    const text = data.content?.[0]?.text || '';
-    res.json({ text });
-
-  } catch (error) {
-    console.error('Proxy error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur interne. Réessayez.' });
-  }
-});
-
+// ── 404 ───────────────────────────────────────────────────────
 app.use((req, res) => {
-  res.status(404).json({ error: `Route non trouvée: ${req.path}` });
+  res.status(404).json({ error: `Route non trouvee : ${req.method} ${req.path}` });
 });
 
-app.listen(PORT, () => {
-  console.log(`✅  myAgro Claude Proxy — port ${PORT}`);
-  console.log(`🌱  Frontend autorisé: ${allowedOrigins[0]}`);
-  console.log(`🔑  Clé API: ${process.env.ANTHROPIC_API_KEY ? '✅ configurée' : '❌ MANQUANTE'}`);
+// ── Erreurs globales ──────────────────────────────────────────
+app.use((err, req, res, next) => {
+  console.error('Erreur non geree:', err.message);
+  res.status(500).json({ error: 'Erreur serveur interne' });
 });
+
+// ── Demarrage ─────────────────────────────────────────────────
+async function start() {
+  if (!process.env.DATABASE_URL) {
+    console.error('ERREUR: DATABASE_URL manquant dans les variables d\'environnement');
+    process.exit(1);
+  }
+  if (!process.env.JWT_SECRET) {
+    console.error('ERREUR: JWT_SECRET manquant dans les variables d\'environnement');
+    process.exit(1);
+  }
+  try {
+    await initSchema();
+    app.listen(PORT, () => {
+      console.log(`PFS Backend demarre sur le port ${PORT}`);
+      console.log(`Health check : http://localhost:${PORT}/health`);
+    });
+  } catch (err) {
+    console.error('Echec du demarrage:', err.message);
+    process.exit(1);
+  }
+}
+
+start();
