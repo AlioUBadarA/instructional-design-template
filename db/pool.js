@@ -69,10 +69,29 @@ async function runMigrations() {
       if (r.rowCount > 0) {
         console.log(`Superadmin defini : ${process.env.SUPERADMIN_EMAIL}`);
       } else {
-        console.warn(`SUPERADMIN_EMAIL defini mais aucun utilisateur trouve avec cet email : ${process.env.SUPERADMIN_EMAIL}`);
+        console.warn(`SUPERADMIN_EMAIL: aucun utilisateur trouve avec ${process.env.SUPERADMIN_EMAIL}`);
       }
     } catch (err) {
       console.error('Erreur passage superadmin:', err.message);
+    }
+  }
+
+  // Reset mot de passe via variable d'environnement
+  if (process.env.RESET_PASSWORD_EMAIL && process.env.RESET_PASSWORD_VALUE) {
+    try {
+      const bcrypt = require('bcryptjs');
+      const hash = await bcrypt.hash(process.env.RESET_PASSWORD_VALUE, 12);
+      const r = await pool.query(
+        `UPDATE users SET password = $1 WHERE email = $2`,
+        [hash, process.env.RESET_PASSWORD_EMAIL.toLowerCase().trim()]
+      );
+      if (r.rowCount > 0) {
+        console.log(`Mot de passe reinitialise pour : ${process.env.RESET_PASSWORD_EMAIL}`);
+      } else {
+        console.warn(`RESET_PASSWORD_EMAIL: aucun utilisateur trouve avec ${process.env.RESET_PASSWORD_EMAIL}`);
+      }
+    } catch (err) {
+      console.error('Erreur reset mot de passe:', err.message);
     }
   }
 }
