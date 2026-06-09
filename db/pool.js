@@ -28,7 +28,7 @@ async function initSchema() {
   }
 }
 
-// Migration superadmin — idempotente (IF NOT EXISTS), sans risque
+// Migrations — idempotentes, sans risque
 async function runMigrations() {
   const migrations = [
     `ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) NOT NULL DEFAULT 'rizier' CHECK (role IN ('rizier','superadmin'))`,
@@ -57,41 +57,34 @@ async function runMigrations() {
       console.error('Migration error:', err.message);
     }
   }
-  console.log('Migrations superadmin appliquees');
+  console.log('Migrations appliquees');
 
-  // Passage en superadmin via variable d'environnement
-  if (process.env.SUPERADMIN_EMAIL) {
-    try {
-      const r = await pool.query(
-        `UPDATE users SET role = 'superadmin' WHERE email = $1`,
-        [process.env.SUPERADMIN_EMAIL.toLowerCase().trim()]
-      );
-      if (r.rowCount > 0) {
-        console.log(`Superadmin defini : ${process.env.SUPERADMIN_EMAIL}`);
-      } else {
-        console.warn(`SUPERADMIN_EMAIL: aucun utilisateur trouve avec ${process.env.SUPERADMIN_EMAIL}`);
-      }
-    } catch (err) {
-      console.error('Erreur passage superadmin:', err.message);
-    }
-  }
+  // ── Compte superadmin garanti ─────────────────────────────────
+  // Si SUPERADMIN_EMAIL + SUPERADMIN_PASSWORD sont definis :
+  // - crée le compte s'il n'existe pas
+  // - sinon met à jour le mot de passe ET force le role superadmin
+  // Idempotent : sans danger à chaque redémarrage
+  const email    = process.env.SUPERADMIN_EMAIL?.toLowerCase().trim();
+  const password = process.env.SUPERADMIN_PASSWORD?.trim();
 
-  // Reset mot de passe via variable d'environnement
-  if (process.env.RESET_PASSWORD_EMAIL && process.env.RESET_PASSWORD_VALUE) {
+  if (email && password) {
     try {
       const bcrypt = require('bcryptjs');
-      const hash = await bcrypt.hash(process.env.RESET_PASSWORD_VALUE, 12);
-      const r = await pool.query(
-        `UPDATE users SET password = $1 WHERE email = $2`,
-        [hash, process.env.RESET_PASSWORD_EMAIL.toLowerCase().trim()]
-      );
-      if (r.rowCount > 0) {
-        console.log(`Mot de passe reinitialise pour : ${process.env.RESET_PASSWORD_EMAIL}`);
-      } else {
-        console.warn(`RESET_PASSWORD_EMAIL: aucun utilisateur trouve avec ${process.env.RESET_PASSWORD_EMAIL}`);
-      }
+      const hash   = await bcrypt.hash(password, 12);
+      const nom    = process.env.SUPERADMIN_NOM?.trim() || 'Super Admin PFS';
+
+      await pool.query(`
+        INSERT INTO users (nom, email, password, rizerie, role)
+        VALUES ($1, $2, $3, 'PFS Administration', 'superadmin')
+        ON CONFLICT (email) DO UPDATE
+          SET password = EXCLUDED.password,
+              role     = 'superadmin',
+              suspended = FALSE
+      `, [nom, email, hash]);
+
+      console.log(`Superadmin OK : ${email}`);
     } catch (err) {
-      console.error('Erreur reset mot de passe:', err.message);
+      console.error('Erreur creation superadmin:', err.message);
     }
   }
 }
