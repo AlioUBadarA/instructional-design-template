@@ -5,8 +5,15 @@ const { pool } = require('../db/pool');
 
 const router = express.Router();
 
-// POST /api/auth/register
-router.post('/register', async (req, res) => {
+// POST /api/auth/register — DÉSACTIVÉ : les comptes sont créés uniquement par le superadmin
+router.post('/register', (req, res) => {
+  return res.status(403).json({
+    error: 'Les inscriptions publiques sont fermées. Contactez l\'administrateur PFS pour obtenir un accès.'
+  });
+});
+
+// Ancienne implémentation conservée mais inaccessible
+router.post('/register-disabled', async (req, res) => {
   try {
     const { nom, email, password, rizerie, telephone, ville } = req.body;
 
