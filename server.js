@@ -9,6 +9,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ── Securite ──────────────────────────────────────────────────
+app.set('trust proxy', 1); // Render passe par un reverse proxy
 app.use(helmet());
 app.use(cors({
   origin: process.env.FRONTEND_URL || '*',
