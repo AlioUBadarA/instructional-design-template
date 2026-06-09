@@ -1,5 +1,6 @@
 const express = require('express');
 const bcrypt  = require('bcryptjs');
+const jwt     = require('jsonwebtoken');
 const { pool } = require('../db/pool');
 const auth    = require('../middleware/auth');
 const isAdmin = require('../middleware/isAdmin');
@@ -215,6 +216,35 @@ router.patch('/users/:id/password', async (req, res) => {
     res.json({ message: 'Mot de passe réinitialisé avec succès' });
   } catch (err) {
     console.error('admin reset password:', err.message);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// POST /api/admin/users/:id/impersonate — token temporaire pour naviguer comme ce rizier
+router.post('/users/:id/impersonate', async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT id, nom, email, rizerie, telephone, ville, role, suspended FROM users WHERE id = $1',
+      [req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Utilisateur non trouvé' });
+    const target = result.rows[0];
+    if (target.suspended) return res.status(400).json({ error: 'Impossible d\'accéder à un compte suspendu' });
+
+    // Token courte durée (2h) pour l'impersonation
+    const token = jwt.sign(
+      { userId: target.id, nom: target.nom, role: 'rizier', impersonatedBy: req.userId },
+      process.env.JWT_SECRET,
+      { expiresIn: '2h' }
+    );
+    await log(req.userId, req.userNom, 'IMPERSONATION_START', target, {}, req.ip);
+    res.json({
+      token,
+      user: { id: target.id, nom: target.nom, email: target.email, rizerie: target.rizerie, role: 'rizier' },
+      impersonatedBy: { id: req.userId, nom: req.userNom }
+    });
+  } catch (err) {
+    console.error('admin impersonate:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
