@@ -7,16 +7,40 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- ── UTILISATEURS (un compte par rizier) ──────────────────────
 CREATE TABLE IF NOT EXISTS users (
-  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  nom         VARCHAR(120) NOT NULL,
-  email       VARCHAR(200) UNIQUE NOT NULL,
-  password    VARCHAR(200) NOT NULL,
-  rizerie     VARCHAR(150),
-  telephone   VARCHAR(30),
-  ville       VARCHAR(80),
-  created_at  TIMESTAMPTZ DEFAULT NOW(),
-  updated_at  TIMESTAMPTZ DEFAULT NOW()
+  id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  nom              VARCHAR(120) NOT NULL,
+  email            VARCHAR(200) UNIQUE NOT NULL,
+  password         VARCHAR(200) NOT NULL,
+  rizerie          VARCHAR(150),
+  telephone        VARCHAR(30),
+  ville            VARCHAR(80),
+  role             VARCHAR(20) NOT NULL DEFAULT 'rizier' CHECK (role IN ('rizier','superadmin')),
+  suspended        BOOLEAN NOT NULL DEFAULT FALSE,
+  suspended_at     TIMESTAMPTZ,
+  suspended_reason TEXT,
+  created_at       TIMESTAMPTZ DEFAULT NOW(),
+  updated_at       TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Migrations idempotentes pour bases existantes
+ALTER TABLE users ADD COLUMN IF NOT EXISTS role             VARCHAR(20) NOT NULL DEFAULT 'rizier' CHECK (role IN ('rizier','superadmin'));
+ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended        BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended_at     TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended_reason TEXT;
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  actor_id    UUID REFERENCES users(id) ON DELETE SET NULL,
+  actor_nom   VARCHAR(120),
+  action      VARCHAR(80) NOT NULL,
+  target_id   UUID,
+  target_nom  VARCHAR(150),
+  detail      JSONB,
+  ip          VARCHAR(45),
+  created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_actor   ON audit_logs(actor_id);
 
 -- ── CLIENTS ──────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS clients (
